@@ -38,11 +38,11 @@ public:
         time_t now = time(0);
         tm *ltm = localtime(&now);
         // 输出 tm 结构的各个组成部分
-        string data = to_string(1900 + ltm->tm_year) + "-" + 
-                      to_string(1 + ltm->tm_mon) + "-" +
-                      to_string(ltm->tm_mday) + "-" + 
-                      to_string(ltm->tm_hour) + ":" + 
-                      to_string(ltm->tm_min) + ":" + 
+        string data = to_string(1900 + ltm->tm_year) + "_" + 
+                      to_string(1 + ltm->tm_mon) + "_" +
+                      to_string(ltm->tm_mday) + "_" + 
+                      to_string(ltm->tm_hour) + "_" + 
+                      to_string(ltm->tm_min) + "_" + 
                       to_string(ltm->tm_sec);
         rdCANfile.open(txt_path + data + "_CAN_info.txt", ios::trunc);//打开文件，清空
         rdCTRLfile.open(txt_path + data + "_CTRL_info.txt", ios::trunc);//打开文，清空
@@ -184,9 +184,9 @@ void Car_info::show(int temp_size)
     cb_mutex.lock();
     // 根据方向盘所处位置 转换角度
     int angle = 0;
-    if(rd_CAN_info[3]) // 左转
+    if(rd_CAN_info[3]) // 右转
         angle = rd_CAN_info[2]; 
-    else               // 右转
+    else               // 左转
         angle = -rd_CAN_info[2];
     q_CAN.push(angle);
     // 读取控制节点的输出
@@ -218,7 +218,7 @@ void Car_info::show(int temp_size)
     } 
 
     plt::clf();
-    plt::ylim(-700, 700);
+    plt::ylim(-600, 600);
     plt::named_plot("CAN_read", v_t, v_CAN);
     plt::named_plot("CTRL_out", v_t, v_CTRL);
     plt::ylabel("L       angle(deg)       R");
