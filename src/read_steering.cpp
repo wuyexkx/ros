@@ -22,6 +22,7 @@ using namespace std;
 using namespace message_filters;
 
 
+// double或float有效位数
 std::string roundNum(double r, int precision)
 {
     std::stringstream buff;
@@ -29,41 +30,54 @@ std::string roundNum(double r, int precision)
     return buff.str();
 }
 
+// Car_info按照时间戳保存控制 和 CAN读回的数据 保存到txt_path路径下
+//  包括了：
+//      两个回调函数，分别用于订阅CAN节点输出和控制节点输出，控制的回调会直接打印接收到的信息
+//      打印CAN读回的信息
+//      plot显示CAN和控制两路转向数据，包括一阶差分数据
 class Car_info
 {
 public:
-    Car_info(const std::string& txt_path)
-    : rd_CAN_info(20, -1), rd_CTRL_info(20, 1000), cb_flag(0)
-    { 
-        time_t now = time(0);
-        tm *ltm = localtime(&now);
-        // 输出 tm 结构的各个组成部分
-        string data = to_string(1900 + ltm->tm_year) + "_" + 
-                      to_string(1 + ltm->tm_mon) + "_" +
-                      to_string(ltm->tm_mday) + "_" + 
-                      to_string(ltm->tm_hour) + "_" + 
-                      to_string(ltm->tm_min) + "_" + 
-                      to_string(ltm->tm_sec);
-        rdCANfile.open(txt_path + data + "_CAN_info.txt", ios::trunc);//打开文件，清空
-        rdCTRLfile.open(txt_path + data + "_CTRL_info.txt", ios::trunc);//打开文，清空
-
-        ROS_INFO(("\n=========== save txt path: " + txt_path).c_str());
-    }
-    ~Car_info() { rdCANfile.close(); rdCTRLfile.close(); }
-    inline void call_back(const std_msgs::Float64MultiArray::ConstPtr& car_info_msg);
+    Car_info(const std::string& txt_path);
+    ~Car_info();
+    inline void can_call_back(const std_msgs::Float64MultiArray::ConstPtr& car_info_msg);
     inline void ctrl_call_back(const vpm_msgs::ControlOrders::ConstPtr & ctrl_infos);
-    inline void print_info();
-    inline void show(int temp_size = 250);
+    inline void print_info();                 // 打印接收到的数据
+    inline void show(int temp_size = 200);    // 显示缓冲大小(temp_size个点)
 
 private:
-    std::ofstream rdCANfile;
+    std::ofstream rdCANfile;                  // 两个文件
     std::ofstream rdCTRLfile;
-    std::vector<double> rd_CAN_info;
-    std::vector<double> rd_CTRL_info;
-    std::mutex cb_mutex;
-    int cb_flag;
+    std::vector<double> rd_CAN_info;          // 全局存储读回的can值
+    std::vector<vector<double>> rd_CTRL_info; // 4 x 3 全局据存储读到的ctrl值
+    std::mutex cb_mutex;                      // 线程锁
+    int can_cb_flag;                          // can调用回调函数的标志
+    int ctrl_cb_flag;                         // ctrl调用回调函数的标志
 };
-void Car_info::call_back(const std_msgs::Float64MultiArray::ConstPtr& car_info_msg)
+Car_info::Car_info(const std::string& txt_path)
+: rd_CAN_info(10, 0), can_cb_flag(0), ctrl_cb_flag(0), rd_CTRL_info(4,vector<double>(3, 1000))
+{ 
+    // 文件加上时间戳
+    time_t now = time(0);
+    tm *ltm = localtime(&now);
+    // 输出 tm 结构的各个组成部分
+    string data = to_string(1900 + ltm->tm_year) + "_" + 
+                    to_string(1 + ltm->tm_mon) + "_" +
+                    to_string(ltm->tm_mday) + "_" + 
+                    to_string(ltm->tm_hour) + "_" + 
+                    to_string(ltm->tm_min) + "_" + 
+                    to_string(ltm->tm_sec);
+    rdCANfile.open(txt_path + data + "_CAN_info.txt", ios::trunc);  //打开文件，清空
+    rdCTRLfile.open(txt_path + data + "_CTRL_info.txt", ios::trunc);
+
+    ROS_INFO(("\n=========== save txt to " + txt_path).c_str());
+}
+Car_info::~Car_info() 
+{ 
+    rdCANfile.close(); 
+    rdCTRLfile.close(); 
+}
+void Car_info::can_call_back(const std_msgs::Float64MultiArray::ConstPtr& car_info_msg)
 {
 unsigned len = car_info_msg->data.size();	// 取得消息数组的长度 (6)
     // 0刹车状态:      1是踩下, 0是未踩下
@@ -73,8 +87,10 @@ unsigned len = car_info_msg->data.size();	// 取得消息数组的长度 (6)
     // 4方向盘转速方向: 0是左, 1是右 (方向盘移动方向是左还是右)
     // 5方向盘转速:     度/秒
 
+    cb_mutex.lock(); 
+    // 标志置1,在打印的函数里可以显示了
+    can_cb_flag = 1;
     // 暂存接收缓冲数据
-    cb_mutex.lock(); cb_flag = 1;
     for(int i = 0; i < len; ++i) rd_CAN_info[i] = car_info_msg->data.at(i);
 
     // // 将数据保存为txt 多行为一组数据
@@ -118,27 +134,39 @@ void Car_info::ctrl_call_back(const vpm_msgs::ControlOrders::ConstPtr & ctrl_inf
                     1是中速
                     2是快速*/
     
-    // 将数据保存到缓冲区
-    int len = ctrl_infos->len;        // 接收数据的长度
-	vpm_msgs::ControlOrder temp[len];  // 定义缓冲区
+    cb_mutex.lock(); 
+    // 标志置1,在打印的函数里可以显示了
+    ctrl_cb_flag = 1;
+    // 将数据保存到局部缓冲区
+int len = ctrl_infos->len;            // 接收数据的长度
+vpm_msgs::ControlOrder temp[len];     // 定义缓冲区
     for (int i=0; i < len; ++i)       // 保存到缓冲区
-	{ temp[i] = ctrl_infos->control_orders[i]; rd_CTRL_info[i] = temp[i].Data[1]; }
-
-    // 处理缓冲区数据
+	{ 
+        temp[i] = ctrl_infos->control_orders[i]; 
+    }
+    // 将数据保存到全局缓冲区
+    switch(temp[len-1].ID)
+    {
+        case 0x6c1: for(int i=0;i<temp[len-1].Data.size();++i) rd_CTRL_info[0][i] = temp[len-1].Data[i]; break;
+        case 0x6c3: for(int i=0;i<temp[len-1].Data.size();++i) rd_CTRL_info[1][i] = temp[len-1].Data[i]; break;
+        case 0x6c5: for(int i=0;i<temp[len-1].Data.size();++i) rd_CTRL_info[2][i] = temp[len-1].Data[i]; break;
+        case 0x6c7: for(int i=0;i<temp[len-1].Data.size();++i) rd_CTRL_info[3][i] = temp[len-1].Data[i]; break;
+        default: cout << "=====unknow ctrl ID.======" << endl; break;
+    }
+    cb_mutex.unlock();
+    
+    // 处理缓冲区数据, 存入txt
     for (int i=0; i< len; ++i) 
     {
         // 6c1方向盘信息
         if(temp[i].ID == 0x6c1) 
         {
-            // temp
-
             // ROS_INFO(" "); // 显示一下时间戳
             char mod_agl_sp[13] = {" "};
             sprintf(mod_agl_sp, " %d %4.2f %d", int(temp[i].Data[0]), temp[i].Data[1], int(temp[i].Data[2]));
             // cout << mod_agl_sp << endl;
             rdCTRLfile << setprecision(16) << ros::Time::now().toSec(); // 写入文件              
             rdCTRLfile << mod_agl_sp << endl;
-            cout << "CTRL输出:" << mod_agl_sp << " (mode angle sp)" << endl;
         }
         // 油门信息
         else if(temp[i].ID == 0x6c3) ;
@@ -148,89 +176,113 @@ void Car_info::ctrl_call_back(const vpm_msgs::ControlOrders::ConstPtr & ctrl_inf
         else if(temp[i].ID == 0x6c7) ;
     }
 }
-void Car_info::print_info()  // 回调函数33Hz, freq_div默认为4 所以显示为8Hz
+void Car_info::print_info()  
 {
-static unsigned char cnt = 0;
+    static int cnt = 0;
     cb_mutex.lock();
-    if(cb_flag)  
+    ++cnt;
+    if(cnt==3)
     {
-        cb_flag = 0;          
+        cnt = 0;
         ROS_INFO(" "); // 显示一下时间戳
-        std::cout << "--------- CAN读回信息 ---------" << endl;
-        std::cout << "          刹车: "      << rd_CAN_info[0] << endl;
-        std::cout << "          档位: "      << rd_CAN_info[1] << endl;
-        std::cout << "    方向盘角度: "      << rd_CAN_info[2] << endl;
-        std::cout << "方向盘转角方向: "      << rd_CAN_info[3] << endl;
-        std::cout << "方向盘转速方向: "      << rd_CAN_info[4] << endl;
-        std::cout << "    方向盘转速: "      << rd_CAN_info[5] << endl;
-        std::cout << "--------------------------------\n\n" << endl;
+        // 只有调用了回调函数才会打印信息
+        if(ctrl_cb_flag)
+        {
+            ctrl_cb_flag = 0;
+            std::cout << "-------- CTRL输出信息 ---------"        << endl;
+            std::cout << "   转向控制模式: " << rd_CTRL_info[0][0] << endl;
+            std::cout << "   转向目标角度: " << rd_CTRL_info[0][1] << endl;
+            std::cout << "   转向控制速度: " << rd_CTRL_info[0][2] << endl;
+            std::cout << "-------------------------------"       << endl;
+        }
+        if(can_cb_flag)  
+        {
+            can_cb_flag = 0;          
+            std::cout << "--------- CAN读回信息 ---------" << endl;
+            std::cout << "           刹车: " << rd_CAN_info[0]  << endl;
+            std::cout << "           档位: " << rd_CAN_info[1]  << endl;
+            std::cout << "       转向角度: "  << rd_CAN_info[2] << endl;
+            std::cout << "   转向转角方向: "  << rd_CAN_info[3]  << endl;
+            std::cout << "   转向转速方向: "  << rd_CAN_info[4]  << endl;
+            std::cout << "       转向转速: "  << rd_CAN_info[5] << endl;
+            std::cout << "-------------------------------\n\n" << endl;
+        }
     }
     cb_mutex.unlock();
 }
 void Car_info::show(int temp_size)
 {
-    namespace plt = matplotlibcpp;
-    static int cnt = 1;
-    static int start_time = ros::Time::now().toSec();
+namespace plt = matplotlibcpp;
+static int start_time = ros::Time::now().toSec();
+static vector<queue<float>> vct_queue(5); // time CAN CTRL 
 
-    static queue<float> q_CAN;
-    static queue<float> q_CTRL;
-    static queue<float> q_t;
-
-    vector<float> v_CAN;
-    vector<float> v_CTRL;
-    vector<float> v_t;
+    // 读取时间戳
+    vct_queue[0].push(ros::Time::now().toSec()-start_time);
 
     cb_mutex.lock();
-    // 根据方向盘所处位置 转换角度
-    int angle = 0;
-    if(rd_CAN_info[3]) // 右转
-        angle = rd_CAN_info[2]; 
-    else               // 左转
-        angle = -rd_CAN_info[2];
-    q_CAN.push(angle);
-    // 读取控制节点的输出
-    q_CTRL.push(rd_CTRL_info[0]);
-    // 读取时间戳
-    q_t.push(ros::Time::now().toSec()-start_time);
-    if(cnt<temp_size)  // 缓冲区计数
-    { 
-        ++cnt; 
-    } 
-    else
-    {
-        q_CAN.pop();      // 当队列满之后开始删除
-        q_CTRL.pop(); 
-        q_t.pop();
-    }
-    // 取出缓冲区
-    queue<float> temp_q1(q_CAN);
-    queue<float> temp_q2(q_CTRL);
-    queue<float> temp_qt(q_t);
-    while(!temp_q1.empty())
-    {
-        v_CAN.push_back(temp_q1.front());
-        v_CTRL.push_back(temp_q2.front()-1000);
-        v_t.push_back(temp_qt.front());
-        temp_q1.pop();
-        temp_q2.pop();
-        temp_qt.pop();
-    } 
+    // 根据方向盘所处位置，CAN输出的转向角度，转换角度
+    // 方向盘返回的是实际角度，但需要和rd_CAN_info[2]配合得出是左300还是右300度
+    // rd_CAN_info[2]是方向盘当前所处位置是左(0)还是右(1)
+    // 左为负数，右为正数
+int angle = 0;
+    if(rd_CAN_info[3]) angle = rd_CAN_info[2];// 右
+    else angle = -rd_CAN_info[2];             // 左
+    // 保存CAN输出
+    vct_queue[1].push(angle);
+    // 保存控制节点的输出
+    vct_queue[2].push(rd_CTRL_info[0][1]);
+    // 一阶差分
+static float prev_ctrl = 1000;                         // 与控制的初始值抵消
+static float prev_can = 0;                             // 
+    vct_queue[3].push(angle - prev_can);               // 保存CAN差分
+    vct_queue[4].push(rd_CTRL_info[0][1] - prev_ctrl); // 保存CTRL差分
+    prev_ctrl = rd_CTRL_info[0][1];
+    prev_can = angle;
+    cb_mutex.unlock();
 
+    // 显示缓冲区大小的限制处理，没有超限继续存，超限pop之前的数据
+static int cnt = 1;
+    if(cnt<temp_size) ++cnt; 
+    else for(auto &v_q : vct_queue) v_q.pop(); // 当队列满之后开始删除
+    // 拷贝缓冲区，依次存入显示的vector
+vector<queue<float>> temp_vct_queue(vct_queue);
+vector<vector<float>> v_data(temp_vct_queue.size());
+    while(!temp_vct_queue[0].empty())
+    {
+        // 取出数据保存到最终显示的的vector  0-time 1-CAN 2-CTRL 3-diff1
+        for(int i=0; i<v_data.size(); ++i)
+        {
+            // 如果是控制的输出需要剪掉1000的偏置
+            if(i == 2) 
+                v_data[i].push_back(temp_vct_queue[i].front() - 1000);
+            else 
+                v_data[i].push_back(temp_vct_queue[i].front());            
+        }
+        // 从队列中取出数据后删除
+        for(auto &t_v_q : temp_vct_queue) t_v_q.pop();
+    } 
+    // 画animation
     plt::clf();
-    plt::ylim(-600, 600);
-    plt::named_plot("CAN_read", v_t, v_CAN);
-    plt::named_plot("CTRL_out", v_t, v_CTRL);
-    plt::ylabel("L       angle(deg)       R");
-    plt::xlabel("time(s)");
-    plt::title("CTRL and CAN real-time steering angle");
+    plt::subplot(2, 1, 1);
+    plt::suptitle("CAN and CTRL real-time steering angle data");
+    plt::ylabel("L      angle(deg)      R");
+    plt::named_plot("CAN_read", v_data[0], v_data[1]); // 默认颜色
+    plt::named_plot("CTRL_out", v_data[0], v_data[2]);
+    // plt::ylim(-540, 540);
     plt::grid(1);
     plt::legend();
-    plt::pause(0.06); // 显示刷新20Hz 15Hz
 
-    cb_mutex.unlock();
+    plt::subplot(2, 1, 2);
+    plt::ylabel("diff-1 (deg)");
+    plt::xlabel("time(s)");
+    plt::named_plot("diff-1 of CAN_read", v_data[0], v_data[3]); // "y-"
+    plt::named_plot("diff-1 of CTRL_out", v_data[0], v_data[4]);
+    // plt::ylim(-40, 40);
+    plt::grid(1);
+    plt::legend();
+
+    plt::pause(0.2); // 显示刷新20Hz 10Hz 5Hz
 }
-
 
 
 // 保存车辆信息. 终端直接显示, 但只有当接收到can节点的信息时才保存数据到txt文件
@@ -254,30 +306,27 @@ int main(int argc, char**argv)
     ros::Time::init(); // 需要读取时间 
     // 初始化订阅器
 	ros::Subscriber sub_CAN = 
-			nh.subscribe("car_status", 10, &Car_info::call_back, &car_info); 
+			nh.subscribe("car_status", 1, &Car_info::can_call_back, &car_info); 
     ros::Subscriber sub_CTRL = 
-        nh.subscribe("/control/control_orders", 10, &Car_info::ctrl_call_back, &car_info); 
+        nh.subscribe("/control/control_orders", 1, &Car_info::ctrl_call_back, &car_info); 
 
 
     // message_filters::Subscriber<std_msgs::Float64MultiArray> sub_car(nh, "/car_status", 1000);
     // message_filters::Subscriber<std_msgs::Float64> sub_ctrl(nh, "/control/control_orders", 1000);
-    // sub_car.registerCallback(&Car_info::call_back, &car_info);
+    // sub_car.registerCallback(&Car_info::can_call_back, &car_info);
     // sub_ctrl.registerCallback(&Car_info::ctrl_call_back, &car_info);
 
     // 接收频率
-    ros::Rate loop_rate(30);
+    ros::Rate loop_rate(15);
     while(ros::ok())
     {
         ros::spinOnce();
         loop_rate.sleep();
-        // 终端显示car_info
+        // 打印 终端显示car_info 如果只是保存txt则可有可无
         car_info.print_info(); 
-        // random_shuffle(vct.begin(), vct.end());
+        // 画图，耗时间，如果只是保存txt则可有可无
         car_info.show();
     }
-
-    // 关闭ros后需要保存文件
-    car_info.~Car_info();
     
     return 0;
 }
