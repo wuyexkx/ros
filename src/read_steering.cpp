@@ -11,6 +11,7 @@
 #include <std_msgs/Float64.h> 
 #include <std_msgs/Float64MultiArray.h>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <pwd.h>
 #include "vpm_msgs/ControlOrder.h"
@@ -32,7 +33,7 @@ std::string roundNum(double r, int precision)
 
 // Car_info按照时间戳保存控制 和 CAN读回的数据 保存到txt_path路径下
 //  包括了：
-//      两个回调函数，分别用于订阅CAN节点输出和控制节点输出，控制的回调会直接打印接收到的信息
+//      两个回调函数，分别用于订阅CAN节点输出和控制节点输出 
 //      打印CAN读回的信息
 //      plot显示CAN和控制两路转向数据，包括一阶差分数据
 class Car_info
@@ -43,7 +44,7 @@ public:
     inline void can_call_back(const std_msgs::Float64MultiArray::ConstPtr& car_info_msg);
     inline void ctrl_call_back(const vpm_msgs::ControlOrders::ConstPtr & ctrl_infos);
     inline void print_info();                 // 打印接收到的数据
-    inline void show(int temp_size = 200);    // 显示缓冲大小(temp_size个点)
+    inline void show();                       // 显示缓冲大小(temp_size个点)
 
 private:
     std::ofstream rdCANfile;                  // 两个文件
@@ -179,10 +180,10 @@ vpm_msgs::ControlOrder temp[len];     // 定义缓冲区
 void Car_info::print_info()  
 {
     static int cnt = 0;
-    cb_mutex.lock();
     ++cnt;
-    if(cnt==3)
+    if(cnt==6)
     {
+        cb_mutex.lock();
         cnt = 0;
         ROS_INFO(" "); // 显示一下时间戳
         // 只有调用了回调函数才会打印信息
@@ -207,81 +208,98 @@ void Car_info::print_info()
             std::cout << "       转向转速: "  << rd_CAN_info[5] << endl;
             std::cout << "-------------------------------\n\n" << endl;
         }
+        cb_mutex.unlock();
     }
-    cb_mutex.unlock();
 }
-void Car_info::show(int temp_size)
+void Car_info::show()
 {
 namespace plt = matplotlibcpp;
-static int start_time = ros::Time::now().toSec();
-static vector<queue<float>> vct_queue(5); // time CAN CTRL 
+int start_time = ros::Time::now().toSec(); // ros起始时间
+vector<queue<float>> vct_queue(5);         // time CAN CTRL 
+const int temp_size = 200;                 // 画图缓冲大小
+const std::map<std::string, std::string> keyword_arg1{
+                                                        {"color", "C2"},
+                                                        {"linewidth", "1.2"},
+                                                        {"label","CAN"}};
+const std::map<std::string, std::string> keyword_arg2{
+                                                        {"color", "C1"},
+                                                        {"linewidth", "1.2"},
+                                                        {"label","CTRL"}};
 
-    // 读取时间戳
-    vct_queue[0].push(ros::Time::now().toSec()-start_time);
-
-    cb_mutex.lock();
-    // 根据方向盘所处位置，CAN输出的转向角度，转换角度
-    // 方向盘返回的是实际角度，但需要和rd_CAN_info[2]配合得出是左300还是右300度
-    // rd_CAN_info[2]是方向盘当前所处位置是左(0)还是右(1)
-    // 左为负数，右为正数
-int angle = 0;
-    if(rd_CAN_info[3]) angle = rd_CAN_info[2];// 右
-    else angle = -rd_CAN_info[2];             // 左
-    // 保存CAN输出
-    vct_queue[1].push(angle);
-    // 保存控制节点的输出
-    vct_queue[2].push(rd_CTRL_info[0][1]);
-    // 一阶差分
-static float prev_ctrl = 1000;                         // 与控制的初始值抵消
-static float prev_can = 0;                             // 
-    vct_queue[3].push(angle - prev_can);               // 保存CAN差分
-    vct_queue[4].push(rd_CTRL_info[0][1] - prev_ctrl); // 保存CTRL差分
-    prev_ctrl = rd_CTRL_info[0][1];
-    prev_can = angle;
-    cb_mutex.unlock();
-
-    // 显示缓冲区大小的限制处理，没有超限继续存，超限pop之前的数据
-static int cnt = 1;
-    if(cnt<temp_size) ++cnt; 
-    else for(auto &v_q : vct_queue) v_q.pop(); // 当队列满之后开始删除
-    // 拷贝缓冲区，依次存入显示的vector
-vector<queue<float>> temp_vct_queue(vct_queue);
-vector<vector<float>> v_data(temp_vct_queue.size());
-    while(!temp_vct_queue[0].empty())
+    while(ros::ok())
     {
-        // 取出数据保存到最终显示的的vector  0-time 1-CAN 2-CTRL 3-diff1
-        for(int i=0; i<v_data.size(); ++i)
+        // 读取时间戳
+        vct_queue[0].push(ros::Time::now().toSec()-start_time);
+
+        cb_mutex.lock();
+        // 根据方向盘所处位置，CAN输出的转向角度，转换角度
+        // 方向盘返回的是实际角度，但需要和rd_CAN_info[2]配合得出是左300还是右300度
+        // rd_CAN_info[2]是方向盘当前所处位置是左(0)还是右(1)
+        // 左为负数，右为正数
+    int angle = 0;
+        if(rd_CAN_info[3]) angle = rd_CAN_info[2];// 右
+        else angle = -rd_CAN_info[2];             // 左
+        // 保存CAN输出
+        vct_queue[1].push(angle);
+        // 保存控制节点的输出
+        vct_queue[2].push(rd_CTRL_info[0][1]);
+        // 一阶差分
+    float prev_ctrl = 1000;                         // 与控制的初始值抵消
+    float prev_can = 0;                             // 
+        vct_queue[3].push(angle - prev_can);               // 保存CAN差分
+        vct_queue[4].push(rd_CTRL_info[0][1] - prev_ctrl); // 保存CTRL差分
+        prev_ctrl = rd_CTRL_info[0][1];
+        prev_can = angle;
+        cb_mutex.unlock();
+
+        // 显示缓冲区大小的限制处理，没有超限继续存，超限pop之前的数据
+    static int cnt = 1;
+        if(cnt<temp_size) ++cnt; 
+        else for(auto &v_q : vct_queue) v_q.pop(); // 当队列满之后开始删除
+        // 拷贝缓冲区，依次存入显示的vector
+    vector<queue<float>> temp_vct_queue(vct_queue);
+    vector<vector<float>> v_data(temp_vct_queue.size());
+        while(!temp_vct_queue[0].empty())
         {
-            // 如果是控制的输出需要剪掉1000的偏置
-            if(i == 2) 
-                v_data[i].push_back(temp_vct_queue[i].front() - 1000);
-            else 
-                v_data[i].push_back(temp_vct_queue[i].front());            
-        }
-        // 从队列中取出数据后删除
-        for(auto &t_v_q : temp_vct_queue) t_v_q.pop();
-    } 
-    // 画animation
-    plt::clf();
-    plt::subplot(2, 1, 1);
-    plt::suptitle("CAN and CTRL real-time steering angle data");
-    plt::ylabel("L      angle(deg)      R");
-    plt::named_plot("CAN_read", v_data[0], v_data[1]); // 默认颜色
-    plt::named_plot("CTRL_out", v_data[0], v_data[2]);
-    // plt::ylim(-540, 540);
-    plt::grid(1);
-    plt::legend();
+            // 取出数据保存到最终显示的的vector  0-time 1-CAN 2-CTRL 3-diff1
+            for(int i=0; i<v_data.size(); ++i)
+            {
+                // 如果是控制的输出需要剪掉1000的偏置
+                if(i == 2) 
+                    v_data[i].push_back(temp_vct_queue[i].front() - 1000);
+                else 
+                    v_data[i].push_back(temp_vct_queue[i].front());            
+            }
+            // 从队列中取出数据后删除
+            for(auto &t_v_q : temp_vct_queue) t_v_q.pop();
+        } 
 
-    plt::subplot(2, 1, 2);
-    plt::ylabel("diff-1 (deg)");
-    plt::xlabel("time(s)");
-    plt::named_plot("diff-1 of CAN_read", v_data[0], v_data[3]); // "y-"
-    plt::named_plot("diff-1 of CTRL_out", v_data[0], v_data[4]);
-    // plt::ylim(-40, 40);
-    plt::grid(1);
-    plt::legend();
+        // 画animation
+        plt::clf();
+        plt::subplot(2, 1, 1);
+        plt::suptitle("CAN and CTRL real-time steering angle data");
+        plt::ylabel("L      angle(deg)      R");
+        // plt::named_plot("CAN_read", v_data[0], v_data[1]); 
+        // plt::named_plot("CTRL_out", v_data[0], v_data[2]);
+        plt::plot(v_data[0], v_data[1], keyword_arg1); 
+        plt::plot(v_data[0], v_data[2], keyword_arg2);
+        plt::ylim(-60, 60);
+        plt::grid(1);
+        plt::legend();
 
-    plt::pause(0.2); // 显示刷新20Hz 10Hz 5Hz
+        plt::subplot(2, 1, 2);
+        plt::ylabel("diff-1 (deg)");
+        plt::xlabel("time(s)");
+        // plt::named_plot("diff-1 of CAN_read", v_data[0], v_data[3]); 
+        // plt::named_plot("diff-1 of CTRL_out", v_data[0], v_data[4]);
+        plt::plot(v_data[0], v_data[3], keyword_arg1); 
+        plt::plot(v_data[0], v_data[4], keyword_arg2);
+        plt::ylim(-40, 40);
+        plt::grid(1);
+        plt::legend();
+
+        plt::pause(0.1); // 显示刷新20Hz 10Hz 5Hz
+    }
 }
 
 
@@ -298,7 +316,7 @@ int main(int argc, char**argv)
     // 创建Car_info对象  // *******修改保存路径
     Car_info car_info(string(getenv("HOME"))+"/catkin_ws/src/read_steering/output_data/"); 
     // Car_info car_info(string(getenv("HOME"))+"/catkin_ws/src/vpm_control/read_steering/output_data/");  
-    
+
 
     // 初始化ros节点
     ros::init(argc, argv, "read_steering_ros");
@@ -318,15 +336,17 @@ int main(int argc, char**argv)
 
     // 接收频率
     ros::Rate loop_rate(15);
+    // 画图，耗时间，如果只是保存txt则可有可无
+    std::thread show_thread(&Car_info::show, &car_info);
     while(ros::ok())
     {
         ros::spinOnce();
         loop_rate.sleep();
         // 打印 终端显示car_info 如果只是保存txt则可有可无
         car_info.print_info(); 
-        // 画图，耗时间，如果只是保存txt则可有可无
-        car_info.show();
+
     }
+    show_thread.join();
     
     return 0;
 }
