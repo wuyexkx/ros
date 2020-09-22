@@ -1,0 +1,9 @@
+2019-11-13 11:45:29,041 Seg INFO: Using 1 XPUs
+2019-11-13 11:45:29,041 Seg INFO: Namespace(base_size=512, batch_size=2, crop_size=360, dataset='citys', device='cpu', distributed=False, drop_rate=0.3, dtype='float32', epochs=1201, eval_epochs=-1, init_method='env://', local_rank=0, log_step=2, lr=0.02, momentum=0.9, no_cuda=False, num_gpus=1, ohem=False, resume=None, save_dir='./', save_epoch=5, skip_eval=False, start_epoch=0, test_batch_size=1, train_split='train', warmup_factor=0.3333333333333333, warmup_iters=200, weight_decay=0.0001, workers=4)
+2019-11-13 11:45:29,487 Seg INFO: Start training, total epochs 1201 = total iteration: 1785887
+2019-11-13 11:45:32,524 Seg INFO: Ep:0001, Itr:000002 , Lr:0.00680, Cost:3.04s, Eta:31 days, 9:08:50, t_loss:3.501
+2019-11-13 11:45:34,763 Seg INFO: Ep:0001, Itr:000004 , Lr:0.00693, Cost:2.24s, Eta:27 days, 6:22:35, t_loss:3.709
+2019-11-13 11:45:37,046 Seg INFO: Ep:0001, Itr:000006 , Lr:0.00707, Cost:2.28s, Eta:26 days, 1:00:29, t_loss:3.336
+2019-11-13 11:45:39,322 Seg INFO: Ep:0001, Itr:000008 , Lr:0.00720, Cost:2.28s, Eta:25 days, 9:50:56, t_loss:2.825
+2019-11-13 11:45:41,669 Seg INFO: Ep:0001, Itr:000010 , Lr:0.00733, Cost:2.35s, Eta:25 days, 4:18:51, t_loss:3.245
+2019-11-13 11:45:43,911 Seg INFO: Ep:0001, Itr:000012 , Lr:0.00747, Cost:2.24s, Eta:24 days, 20:17:08, t_loss:2.719
