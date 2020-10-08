@@ -1,5 +1,6 @@
 中文|[English](Readme_EN.md)
 
+<font color=red> **在sample-objectdetectionbyyolov3的基础上添加atlas200dk摄像头的代码，结构很混乱只是能跑通而已。** </font>
 
 **该案例仅仅用于学习，打通流程，不对效果负责，不支持商用。**
 
