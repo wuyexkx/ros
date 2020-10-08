@@ -1,0 +1,4 @@
+模型自己转换吧
+
+1. 需要下载yolov3.caffemodel，放到sample-objectdetectionbyyolov3/MyModel路径下。
+2. 模型转换完后会自动生成yolov3.om，文件太大了删除了,需要拷贝到sample-objectdetectionbyyolov3/script/yolov3.om。
